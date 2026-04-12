@@ -91,16 +91,20 @@ wifi:
 
 captive_portal:
 
+
 external_components:
-  - source:
-      type: local
-      path: ../esphome-intercom/esphome/components
+#   - source:# For use remotely 
+#       type: local
+#       path: ../esphome-intercom/esphome/components
+  - source: github://n-IA-hane/esphome-intercom
     components: [i2s_audio_duplex]
 
-# For use remotely 
-# external_components:
-#   - source: github://n-IA-hane/esphome-intercom
-#     components: [i2s_audio_duplex]
+  - source: github://pr#15628
+    # Workaround for "Failed to allocate tensors for the streaming model":
+    # https://github.com/esphome/esphome/issues/15603#issuecomment-4224931948
+    refresh: 0s
+    components:
+      - micro_wake_word
 
 button:
   - platform: factory_reset
