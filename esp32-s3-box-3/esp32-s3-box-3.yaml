@@ -62,6 +62,8 @@ esp32:
       CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240: "y"
       CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
       CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
+      CONFIG_SPIRAM_RODATA: "y"
 
 psram:
   mode: octal
@@ -88,6 +90,12 @@ wifi:
     - script.execute: draw_display
 
 captive_portal:
+
+external_components:
+  - source:
+      type: local
+      path: ../esphome-intercom/esphome/components
+    components: [i2s_audio_duplex]
 
 button:
   - platform: factory_reset
@@ -134,20 +142,25 @@ i2c:
     scl: GPIO18
     sda: GPIO8
 
-i2s_audio:
-  - id: i2s_audio_bus
-    i2s_lrclk_pin:
-      number: GPIO45
-      ignore_strapping_warning: true
-    i2s_bclk_pin: GPIO17
-    i2s_mclk_pin: GPIO2
+i2s_audio_duplex:
+  id: i2s_duplex
+  i2s_lrclk_pin:
+    number: GPIO45
+    ignore_strapping_warning: true
+  i2s_bclk_pin: GPIO17
+  i2s_mclk_pin: GPIO2
+  i2s_din_pin: GPIO16
+  i2s_dout_pin: GPIO15
+  sample_rate: 48000
+  output_sample_rate: 16000
+  buffers_in_psram: true
 
 audio_adc:
   - platform: es7210
     i2c_id: i2c_adc_dac
     id: es7210_adc
     bits_per_sample: 16bit
-    sample_rate: 16000
+    sample_rate: 48000
 
 audio_dac:
   - platform: es8311
@@ -157,23 +170,39 @@ audio_dac:
     sample_rate: 48000
 
 microphone:
-  - platform: i2s_audio
+  - platform: i2s_audio_duplex
     id: box_mic
-    sample_rate: 16000
-    i2s_din_pin: GPIO16
-    bits_per_sample: 16bit
-    adc_type: external
+    i2s_audio_duplex_id: i2s_duplex
 
 speaker:
-  - platform: i2s_audio
-    id: box_speaker
-    i2s_dout_pin: GPIO15
-    dac_type: external
-    sample_rate: 48000
-    bits_per_sample: 16bit
-    channel: left
+  - platform: i2s_audio_duplex
+    id: hw_speaker
+    i2s_audio_duplex_id: i2s_duplex
     audio_dac: es8311_dac
-    buffer_duration: 100ms
+    sample_rate: 48000
+
+  - platform: mixer
+    id: audio_mixer
+    output_speaker: hw_speaker
+    num_channels: 1
+    task_stack_in_psram: true
+    source_speakers:
+      - id: media_speaker_mix
+        timeout: 10s
+        buffer_duration: 100ms
+      - id: tts_speaker_mix
+        timeout: 10s
+        buffer_duration: 100ms
+
+  - platform: resampler
+    id: media_speaker
+    output_speaker: media_speaker_mix
+    task_stack_in_psram: true
+
+  - platform: resampler
+    id: tts_speaker
+    output_speaker: tts_speaker_mix
+    task_stack_in_psram: true
 
 media_player:
   - platform: speaker
@@ -181,15 +210,24 @@ media_player:
     id: speaker_media_player
     volume_min: 0.5
     volume_max: 0.8
-    announcement_pipeline:
-      speaker: box_speaker
+    media_pipeline:
+      speaker: media_speaker
       format: FLAC
       sample_rate: 48000
-      num_channels: 1  # S3 Box only has one output channel
+    announcement_pipeline:
+      speaker: tts_speaker
+      format: FLAC
+      sample_rate: 48000
     files:
       - id: timer_finished_sound
         file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/timer_finished.flac
+      - id: wake_chime_sound
+        file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/timer_finished.flac  # TODO: Replace with actual chime sound
     on_announcement:
+      - logger.log:
+          level: INFO
+          tag: "duplex"
+          format: "media_player: on_announcement fired"
       # Stop the wake word (mWW or VA) if the mic is capturing
       - if:
           condition:
@@ -204,7 +242,7 @@ media_player:
                   - wait_until:
                       - not:
                           voice_assistant.is_running:
-      # Since VA isn't running, this is user-intiated media playback. Draw the mute display
+      # Since VA isn't running, this is user-initiated media playback. Draw the mute display
       - if:
           condition:
             not:
@@ -213,7 +251,11 @@ media_player:
             - lambda: id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
             - script.execute: draw_display
     on_idle:
-      # Since VA isn't running, this is the end of user-intiated media playback. Restart the wake word.
+      - logger.log:
+          level: INFO
+          tag: "duplex"
+          format: "media_player: on_idle fired"
+      # Since VA isn't running, this is the end of user-initiated media playback. Restart the wake word.
       - if:
           condition:
             not:
@@ -230,6 +272,12 @@ micro_wake_word:
     - hey_mycroft
     - hey_jarvis
   on_wake_word_detected:
+    - logger.log:
+        level: INFO
+        tag: "chime"
+        format: "MWW: wake word detected '%s', playing chime"
+        args: ['wake_word.c_str()']
+    - script.execute: play_chime
     - voice_assistant.start:
         wake_word: !lambda return wake_word;
 
@@ -241,6 +289,12 @@ voice_assistant:
   noise_suppression_level: 2
   auto_gain: 31dBFS
   volume_multiplier: 2.0
+  on_wake_word_detected:
+    - logger.log:
+        level: INFO
+        tag: "chime"
+        format: "VA: streaming wake word detected, playing chime"
+    - script.execute: play_chime
   on_listening:
     - lambda: id(voice_assistant_phase) = ${voice_assist_listening_phase_id};
     - text_sensor.template.publish:
@@ -270,13 +324,14 @@ voice_assistant:
         condition:
           - media_player.is_announcing:
         timeout: 0.5s
-    # Announcement is finished and the I2S bus is free
+    # Announcement is finished
     - wait_until:
         - and:
             - not:
                 media_player.is_announcing:
             - not:
                 speaker.is_playing:
+                    id: tts_speaker
     # Restart only mWW if enabled; streaming wake words automatically restart
     - if:
         condition:
@@ -334,6 +389,16 @@ voice_assistant:
     - script.execute: draw_display
 
 script:
+  - id: play_chime
+    then:
+      - logger.log:
+          level: INFO
+          tag: "chime"
+          format: "Playing wake word chime (duplex test)"
+      - media_player.speaker.play_on_device_media_file:
+          media_file: wake_chime_sound
+          announcement: false
+
   - id: draw_display
     then:
       - if:
