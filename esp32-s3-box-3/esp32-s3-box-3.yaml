@@ -230,8 +230,24 @@ media_player:
     files:
       - id: timer_finished_sound
         file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/timer_finished.flac
-      - id: wake_chime_sound
-        file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/timer_finished.flac  # TODO: Replace with actual chime sound
+      - id: wake_chime_sound_0
+        file: sounds/timer_finished.wav
+      - id: wake_chime_sound_1
+        file: sounds/timer_finished.wav
+      - id: wake_chime_sound_2
+        file: sounds/timer_finished.wav
+      - id: wake_chime_sound_3
+        file: sounds/timer_finished.wav
+      - id: wake_chime_sound_4
+        file: sounds/timer_finished.wav
+      - id: wake_chime_sound_5
+        file: sounds/timer_finished.wav
+      - id: wake_chime_sound_6
+        file: sounds/timer_finished.wav
+      - id: wake_chime_sound_7
+        file: sounds/timer_finished.wav
+      - id: wake_chime_sound_8
+        file: sounds/timer_finished.wav
     on_announcement:
       - logger.log:
           level: INFO
@@ -400,6 +416,74 @@ voice_assistant:
     - script.execute: draw_display
 
 script:
+  # Pick a random chime file and play it.
+  - id: play_random_chime
+    then:
+      - lambda: id(chime_index) = esp_random() % 9;
+      - if:
+          condition:
+            lambda: return id(chime_index) == 0;
+          then:
+            - media_player.speaker.play_on_device_media_file:
+                media_file: wake_chime_sound_0
+                announcement: false
+      - if:
+          condition:
+            lambda: return id(chime_index) == 1;
+          then:
+            - media_player.speaker.play_on_device_media_file:
+                media_file: wake_chime_sound_1
+                announcement: false
+      - if:
+          condition:
+            lambda: return id(chime_index) == 2;
+          then:
+            - media_player.speaker.play_on_device_media_file:
+                media_file: wake_chime_sound_2
+                announcement: false
+      - if:
+          condition:
+            lambda: return id(chime_index) == 3;
+          then:
+            - media_player.speaker.play_on_device_media_file:
+                media_file: wake_chime_sound_3
+                announcement: false
+      - if:
+          condition:
+            lambda: return id(chime_index) == 4;
+          then:
+            - media_player.speaker.play_on_device_media_file:
+                media_file: wake_chime_sound_4
+                announcement: false
+      - if:
+          condition:
+            lambda: return id(chime_index) == 5;
+          then:
+            - media_player.speaker.play_on_device_media_file:
+                media_file: wake_chime_sound_5
+                announcement: false
+      - if:
+          condition:
+            lambda: return id(chime_index) == 6;
+          then:
+            - media_player.speaker.play_on_device_media_file:
+                media_file: wake_chime_sound_6
+                announcement: false
+      - if:
+          condition:
+            lambda: return id(chime_index) == 7;
+          then:
+            - media_player.speaker.play_on_device_media_file:
+                media_file: wake_chime_sound_7
+                announcement: false
+      - if:
+          condition:
+            lambda: return id(chime_index) == 8;
+          then:
+            - media_player.speaker.play_on_device_media_file:
+                media_file: wake_chime_sound_8
+                announcement: false
+
   # Mode A (MWW): mute mic -> play chime -> wait -> unmute -> voice_assistant.start
   - id: play_chime_and_start_va
     parameters:
@@ -412,9 +496,7 @@ script:
       - lambda: id(chime_in_progress) = true;
       - lambda: id(chime_did_mute) = !id(box_mic).get_mute_state();
       - microphone.mute:
-      - media_player.speaker.play_on_device_media_file:
-          media_file: wake_chime_sound
-          announcement: false
+      - script.execute: play_random_chime
       - wait_until:
           condition:
             media_player.is_playing:
@@ -423,7 +505,7 @@ script:
           condition:
             not:
               media_player.is_playing:
-          timeout: 2s
+          timeout: 4s
       - if:
           condition:
             lambda: return id(chime_did_mute);
@@ -452,9 +534,7 @@ script:
       - lambda: id(chime_in_progress) = true;
       - lambda: id(chime_did_mute) = !id(box_mic).get_mute_state();
       - microphone.mute:
-      - media_player.speaker.play_on_device_media_file:
-          media_file: wake_chime_sound
-          announcement: false
+      - script.execute: play_random_chime
       - wait_until:
           condition:
             media_player.is_playing:
@@ -784,6 +864,10 @@ globals:
   - id: global_first_active_timer
     type: voice_assistant::Timer
     restore_value: false
+  - id: chime_index
+    type: int
+    restore_value: false
+    initial_value: "0"
   - id: chime_in_progress
     type: bool
     restore_value: false
