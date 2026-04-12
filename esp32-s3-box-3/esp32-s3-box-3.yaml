@@ -97,6 +97,11 @@ external_components:
       path: ../esphome-intercom/esphome/components
     components: [i2s_audio_duplex]
 
+# For use remotely 
+# external_components:
+#   - source: github://n-IA-hane/esphome-intercom
+#     components: [i2s_audio_duplex]
+
 button:
   - platform: factory_reset
     id: factory_reset_btn
@@ -255,11 +260,13 @@ media_player:
           level: INFO
           tag: "duplex"
           format: "media_player: on_idle fired"
-      # Since VA isn't running, this is the end of user-initiated media playback. Restart the wake word.
+      # Don't restart wake word if this idle transition is from chime playback
       - if:
           condition:
-            not:
-              voice_assistant.is_running:
+            and:
+              - not:
+                  voice_assistant.is_running:
+              - lambda: return !id(chime_in_progress);
           then:
             - script.execute: start_wake_word
             - script.execute: set_idle_or_mute_phase
@@ -275,10 +282,10 @@ micro_wake_word:
     - logger.log:
         level: INFO
         tag: "chime"
-        format: "MWW: wake word detected '%s', playing chime"
+        format: "MWW: wake word detected '%s'"
         args: ['wake_word.c_str()']
-    - script.execute: play_chime
-    - voice_assistant.start:
+    - script.execute:
+        id: play_chime_and_start_va
         wake_word: !lambda return wake_word;
 
 voice_assistant:
@@ -293,8 +300,8 @@ voice_assistant:
     - logger.log:
         level: INFO
         tag: "chime"
-        format: "VA: streaming wake word detected, playing chime"
-    - script.execute: play_chime
+        format: "VA: streaming wake word detected"
+    - script.execute: play_chime_streaming
   on_listening:
     - lambda: id(voice_assistant_phase) = ${voice_assist_listening_phase_id};
     - text_sensor.template.publish:
@@ -389,15 +396,84 @@ voice_assistant:
     - script.execute: draw_display
 
 script:
-  - id: play_chime
+  # Mode A (MWW): mute mic -> play chime -> wait -> unmute -> voice_assistant.start
+  - id: play_chime_and_start_va
+    parameters:
+      wake_word: string
     then:
       - logger.log:
           level: INFO
           tag: "chime"
-          format: "Playing wake word chime (duplex test)"
+          format: "MWW chime: starting sequence"
+      - lambda: id(chime_in_progress) = true;
+      - lambda: id(chime_did_mute) = !id(box_mic).get_mute_state();
+      - microphone.mute:
       - media_player.speaker.play_on_device_media_file:
           media_file: wake_chime_sound
           announcement: false
+      - wait_until:
+          condition:
+            media_player.is_playing:
+          timeout: 1s
+      - wait_until:
+          condition:
+            not:
+              media_player.is_playing:
+          timeout: 2s
+      - if:
+          condition:
+            lambda: return id(chime_did_mute);
+          then:
+            - microphone.unmute:
+            - logger.log:
+                level: DEBUG
+                tag: "chime"
+                format: "MWW chime: mic unmuted"
+      - lambda: id(chime_in_progress) = false;
+      - voice_assistant.start:
+          wake_word: !lambda return wake_word;
+      - logger.log:
+          level: INFO
+          tag: "chime"
+          format: "MWW chime: va.start called"
+
+  # Mode B (Streaming): mute mic -> play chime -> wait -> unmute
+  # HA receives silence during chime (~1s), within normal post-wake-word pause
+  - id: play_chime_streaming
+    then:
+      - logger.log:
+          level: INFO
+          tag: "chime"
+          format: "Streaming chime: starting sequence"
+      - lambda: id(chime_in_progress) = true;
+      - lambda: id(chime_did_mute) = !id(box_mic).get_mute_state();
+      - microphone.mute:
+      - media_player.speaker.play_on_device_media_file:
+          media_file: wake_chime_sound
+          announcement: false
+      - wait_until:
+          condition:
+            media_player.is_playing:
+          timeout: 1s
+      - wait_until:
+          condition:
+            not:
+              media_player.is_playing:
+          timeout: 2s
+      - if:
+          condition:
+            lambda: return id(chime_did_mute);
+          then:
+            - microphone.unmute:
+            - logger.log:
+                level: DEBUG
+                tag: "chime"
+                format: "Streaming chime: mic unmuted"
+      - lambda: id(chime_in_progress) = false;
+      - logger.log:
+          level: INFO
+          tag: "chime"
+          format: "Streaming chime: complete"
 
   - id: draw_display
     then:
@@ -704,6 +780,14 @@ globals:
   - id: global_first_active_timer
     type: voice_assistant::Timer
     restore_value: false
+  - id: chime_in_progress
+    type: bool
+    restore_value: false
+    initial_value: "false"
+  - id: chime_did_mute
+    type: bool
+    restore_value: false
+    initial_value: "false"
   - id: global_is_timer_active
     type: bool
     restore_value: false
