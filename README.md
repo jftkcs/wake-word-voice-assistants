@@ -5,7 +5,8 @@ Custom ESPHome configuration for the ESP32-S3-Box-3, forked from
 (`esp32-s3-box-3/esp32-s3-box-3.yaml`).
 
 **IMPORTANT** - In "Streaming" mode (wake word detection on HA with openWakeWord) we can't
-pause the VAD. So the longer your chime is, the less time you have to start speaking afterwards.
+pause the VAD. AEC lets the mic stay live during the wake chime, but very long chimes can still
+eat into the natural post-wake-word speaking window.
 With micro_wake_word (On-Device) you can make the chime as long as you want since we don't kick off the
 assistant until after chime is done.
 
@@ -16,7 +17,8 @@ assistant until after chime is done.
 - **Mixer / resampler speaker stack** Swap `i2s_audio` speaker with hardware speaker via an `audio_mixer` on two channels (`media_speaker_mix`, `tts_speaker_mix`), each fronted by a `resampler`. Media and TTS/announcement audio are mixed independently.
   - **NOTE** This is probably not necessary if you encode local files correctly
     as HA can transcode media during playback for streamed audio. If you need the memory, can probably remove the resamplers. I was just too lazy to keep testing once this worked.
-- **Wake word chime** -- A confirmation chime plays on-device immediately after wake word detection in both modes (on-device mWW and streaming). The mic is muted during chime playback to prevent feedback, then unmuted before the voice pipeline proceeds.
+- **ESP AEC for wake chime** -- Adds `esp_aec` from `esphome-intercom` and feeds it with the ES7210 TDM hardware reference (`48000 -> 16000` mic/AEC path, MIC3 at 0dB). Keeps the microphone live during chime playback instead of muting it. TTS, announcements, and normal media playback still use the existing wake-word stop/mute behavior for now.
+- **Wake word chime** -- A confirmation chime plays on-device immediately after wake word detection in both modes (on-device mWW and streaming). The chime is played with AEC so you can start talking without waiting for a mic mute/unmute cycle.
 - **PSRAM optimizations** -- Added `CONFIG_SPIRAM_FETCH_INSTRUCTIONS` and
   `CONFIG_SPIRAM_RODATA` sdkconfig options; mixer and resampler tasks use PSRAM
   stacks.
@@ -67,7 +69,7 @@ flowchart TD
     IDLE["IDLE (phase 1)\nmWW listening\nVA not running"]
     IDLE -->|mww.on_wake_word_detected| CHIME
 
-    CHIME["play_chime_and_start_va\n1. chime_in_progress = true\n2. mute mic\n3. play chime (announcement: false)\n4. wait for playback to finish\n5. restore mic mute state\n6. chime_in_progress = false\n7. voice_assistant.start(wake_word)"]
+    CHIME["play_chime_and_start_va\n1. chime_in_progress = true\n2. voice_assistant.start(wake_word)\n3. play chime with AEC active (announcement: false)\n4. wait for playback to finish\n5. chime_in_progress = false"]
     CHIME -->|va.on_listening| LISTENING
 
     LISTENING["LISTENING (phase 2)\nUser speaks..."]
@@ -91,7 +93,8 @@ flowchart TD
 **Key points:**
 - VA is *not* running while idle. mWW owns the mic for wake word detection.
 - `use_wake_word` stays `false` -- mWW detects the wake word externally and
-  explicitly calls `voice_assistant.start`.
+  explicitly calls `voice_assistant.start` before playing the chime so the
+  Assist mic stream can start during local playback.
 - The chime plays with `announcement: false` so it goes through the media
   pipeline. `chime_in_progress` prevents `on_idle` from prematurely restarting
   the wake word engine when the chime finishes.
@@ -112,7 +115,7 @@ flowchart TD
     IDLE -->|"va.on_wake_word_detected\n(from HA server)"| CHIME
     IDLE -->|"va.on_wake_word_detected\n(from HA server)"| LISTENING
 
-    CHIME["play_chime_streaming\n1. chime_in_progress = true\n2. mute mic\n   (HA receives silence ~1s)\n3. play chime (announcement: false)\n4. wait for playback to finish\n5. restore mic mute state\n6. chime_in_progress = false\n(NO voice_assistant.start — VA already running)"]
+    CHIME["play_chime_streaming\n1. chime_in_progress = true\n2. play chime with AEC active (announcement: false)\n3. wait for playback to finish\n4. chime_in_progress = false\n(NO voice_assistant.start — VA already running)"]
 
     LISTENING["LISTENING (phase 2)\nUser speaks..."]
     LISTENING -->|va.on_stt_vad_end| THINKING
@@ -138,8 +141,7 @@ flowchart TD
 - The chime script does *not* call `voice_assistant.start` because the VA
   session is already active. HA simply transitions from wake-word-detected into
   the STT phase on its own.
-- The ~1s of silence HA receives during chime playback falls within the normal
-  post-wake-word pause window.
+- AEC is expected to suppress the chime from the streaming mic path. Probably has risk of sample rate shenanigans if changed from what's tested here.
 - At `on_end`, streaming wake word detection auto-restarts -- no explicit
   `micro_wake_word.start` or `voice_assistant.start_continuous` is needed.
 
@@ -151,7 +153,7 @@ flowchart TD
 | VA state while idle     | Not running; mWW owns mic                 | Running continuously (`start_continuous`)        |
 | Chime trigger           | `mww.on_wake_word_detected`               | `va.on_wake_word_detected`                       |
 | Chime script            | `play_chime_and_start_va`                 | `play_chime_streaming`                           |
-| After chime             | Calls `voice_assistant.start(wake_word)`  | Nothing -- VA already running                    |
+| After wake detection    | Calls `voice_assistant.start(wake_word)` before chime | VA already running                    |
 | After `on_end`          | Restarts mWW explicitly                   | Streaming auto-restarts                          |
 | `use_wake_word` flag    | Always `false`                            | Always `true`                                    |
 
